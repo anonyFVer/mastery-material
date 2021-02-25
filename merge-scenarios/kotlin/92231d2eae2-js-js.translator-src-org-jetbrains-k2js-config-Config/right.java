@@ -1,0 +1,169 @@
+/*
+ * Copyright 2010-2012 JetBrains s.r.o.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.jetbrains.k2js.config;
+
+import com.google.common.collect.Lists;
+import com.intellij.openapi.project.Project;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.jet.lang.psi.JetFile;
+import org.jetbrains.jet.lang.resolve.BindingContext;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * @author Pavel Talanov
+ *         <p/>
+ *         Base class representing a configuration of translator.
+ */
+public abstract class Config {
+
+    @NotNull
+    public static Config getEmptyConfig(@NotNull Project project, @NotNull EcmaVersion ecmaVersion) {
+        return new Config(project, ecmaVersion) {
+            @NotNull
+            @Override
+            protected List<JetFile> generateLibFiles() {
+                return Collections.emptyList();
+            }
+        };
+    }
+
+    //NOTE: used by mvn build
+    @SuppressWarnings("UnusedDeclaration")
+    @NotNull
+    public static Config getEmptyConfig(@NotNull Project project) {
+        return getEmptyConfig(project, EcmaVersion.defaultVersion());
+    }
+
+    @NotNull
+    public static final List<String> LIB_FILES_WITH_DECLARATIONS = Arrays.asList(
+            "/core/annotations.kt",
+            "/jquery/common.kt",
+            "/jquery/ui.kt",
+            "/core/javautil.kt",
+            "/core/javalang.kt",
+            "/core/javaio.kt",
+            "/core/kotlin.kt",
+            "/core/date.kt",
+            "/core/core.kt",
+            "/core/math.kt",
+            "/core/json.kt",
+            "/stdlib/browser.kt",
+            "/core/dom.kt",
+            "/dom/domcore.kt",
+            "/dom/html/htmlcore.kt",
+            "/dom/html5/canvas.kt",
+            "/dom/html/window.kt",
+            "/junit/core.kt",
+            "/qunit/core.kt"
+    );
+
+    @NotNull
+    public static final List<String> LIB_FILES_WITH_CODE = Arrays.asList(
+            "/stdlib/JUMaps.kt"
+    );
+
+    @NotNull
+    public static final List<String> LIB_FILE_NAMES = Lists.newArrayList();
+    static {
+        LIB_FILE_NAMES.addAll(LIB_FILES_WITH_DECLARATIONS);
+        LIB_FILE_NAMES.addAll(LIB_FILES_WITH_CODE);
+    }
+
+    /**
+     * the library files which depend on the STDLIB files to be able to compile
+     */
+    @NotNull
+    public static final List<String> LIB_FILE_NAMES_DEPENDENT_ON_STDLIB = Arrays.asList(
+            "/stdlib/dom.kt",
+            "/stdlib/jutil.kt",
+            "/stdlib/JUMaps.kt",
+            "/stdlib/test.kt",
+            "/core/stringDefs.kt",
+            "/core/strings.kt"
+    );
+
+    public static final String LIBRARIES_LOCATION = "js/js.libraries/src";
+
+    /**
+     * The file names in the standard library to compile
+     */
+    @NotNull
+    public static final List<String> STDLIB_FILE_NAMES = Arrays.asList(
+            "/kotlin/Preconditions.kt",
+            "/kotlin/Iterators.kt",
+            "/kotlin/JUtil.kt",
+            "/kotlin/JUtilCollections.kt",
+            "/kotlin/JUtilMaps.kt",
+            "/kotlin/JLangIterables.kt",
+            "/kotlin/JLangIterablesLazy.kt",
+            "/kotlin/JLangIterablesSpecial.kt",
+            "/generated/JUtilIteratorsFromJLangIterables.kt",
+            "/generated/JUtilIterablesFromJUtilCollections.kt",
+            "/kotlin/support/AbstractIterator.kt",
+            "/kotlin/Standard.kt",
+            "/kotlin/Strings.kt",
+            "/kotlin/dom/Dom.kt",
+            "/kotlin/test/Test.kt"
+    );
+
+    /**
+     * The location of the stdlib sources
+     */
+    public static final String STDLIB_LOCATION = "libraries/stdlib/src";
+
+    @NotNull
+    private final Project project;
+    @Nullable
+    private List<JetFile> libFiles = null;
+    @NotNull
+    private final EcmaVersion target;
+
+    public Config(@NotNull Project project, @NotNull EcmaVersion ecmaVersion) {
+        this.project = project;
+        this.target = ecmaVersion;
+    }
+
+    @NotNull
+    public Project getProject() {
+        return project;
+    }
+
+    @NotNull
+    public EcmaVersion getTarget() {
+        return target;
+    }
+
+    @NotNull
+    protected abstract List<JetFile> generateLibFiles();
+
+    @NotNull
+    public final List<JetFile> getLibFiles() {
+        if (libFiles == null) {
+            libFiles = generateLibFiles();
+        }
+        return libFiles;
+    }
+
+    @Nullable
+    public BindingContext getLibraryBindingContext() {
+        return null;
+    }
+}

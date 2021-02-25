@@ -1,0 +1,31 @@
+package jadx.core.dex.attributes;
+
+public enum AFlag {
+
+    TRY_ENTER,
+    TRY_LEAVE,
+    LOOP_START,
+    LOOP_END,
+    SYNTHETIC,
+    FINAL,
+    RETURN,
+    ORIG_RETURN,
+    DECLARE_VAR,
+    DONT_WRAP,
+    DONT_SHRINK,
+    DONT_INLINE,
+    DONT_GENERATE,
+    DONT_RENAME,
+    SKIP,
+    REMOVE,
+    SKIP_FIRST_ARG,
+    SKIP_ARG,
+    ANONYMOUS_CONSTRUCTOR,
+    ANONYMOUS_CLASS,
+    THIS,
+    ELSE_IF_CHAIN,
+    WRAPPED,
+    ARITH_ONEARG,
+    FALL_THROUGH,
+    INCONSISTENT_CODE
+}

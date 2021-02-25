@@ -1,0 +1,1570 @@
+package org.elasticsearch.test;
+
+import com.carrotsearch.randomizedtesting.RandomizedContext;
+import com.carrotsearch.randomizedtesting.annotations.TestGroup;
+import com.carrotsearch.randomizedtesting.generators.RandomInts;
+import com.carrotsearch.randomizedtesting.generators.RandomPicks;
+import org.apache.http.HttpHost;
+import org.apache.lucene.util.IOUtils;
+import org.apache.lucene.util.LuceneTestCase;
+import org.apache.lucene.util.TestUtil;
+import org.elasticsearch.ElasticsearchException;
+import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.DocWriteResponse;
+import org.elasticsearch.action.ShardOperationFailedException;
+import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
+import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
+import org.elasticsearch.action.admin.cluster.node.info.NodeInfo;
+import org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse;
+import org.elasticsearch.action.admin.cluster.state.ClusterStateResponse;
+import org.elasticsearch.action.admin.cluster.tasks.PendingClusterTasksResponse;
+import org.elasticsearch.action.admin.indices.create.CreateIndexRequestBuilder;
+import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse;
+import org.elasticsearch.action.admin.indices.flush.FlushResponse;
+import org.elasticsearch.action.admin.indices.forcemerge.ForceMergeResponse;
+import org.elasticsearch.action.admin.indices.get.GetIndexResponse;
+import org.elasticsearch.action.admin.indices.mapping.get.GetMappingsResponse;
+import org.elasticsearch.action.admin.indices.refresh.RefreshResponse;
+import org.elasticsearch.action.admin.indices.segments.IndicesSegmentResponse;
+import org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateRequestBuilder;
+import org.elasticsearch.action.bulk.BulkRequestBuilder;
+import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.get.GetResponse;
+import org.elasticsearch.action.index.IndexRequestBuilder;
+import org.elasticsearch.action.index.IndexResponse;
+import org.elasticsearch.action.search.ClearScrollResponse;
+import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.support.IndicesOptions;
+import org.elasticsearch.client.AdminClient;
+import org.elasticsearch.client.Client;
+import org.elasticsearch.client.Requests;
+import org.elasticsearch.client.RestClient;
+import org.elasticsearch.client.RestClientBuilder;
+import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.health.ClusterHealthStatus;
+import org.elasticsearch.cluster.metadata.IndexMetaData;
+import org.elasticsearch.cluster.metadata.MappingMetaData;
+import org.elasticsearch.cluster.metadata.MetaData;
+import org.elasticsearch.cluster.routing.IndexRoutingTable;
+import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
+import org.elasticsearch.cluster.routing.ShardRouting;
+import org.elasticsearch.cluster.routing.UnassignedInfo;
+import org.elasticsearch.cluster.routing.allocation.DiskThresholdSettings;
+import org.elasticsearch.cluster.routing.allocation.decider.EnableAllocationDecider;
+import org.elasticsearch.cluster.service.ClusterService;
+import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.Priority;
+import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.collect.ImmutableOpenMap;
+import org.elasticsearch.common.collect.Tuple;
+import org.elasticsearch.common.network.NetworkAddress;
+import org.elasticsearch.common.network.NetworkModule;
+import org.elasticsearch.common.regex.Regex;
+import org.elasticsearch.common.settings.Setting;
+import org.elasticsearch.common.settings.Setting.Property;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.transport.InetSocketTransportAddress;
+import org.elasticsearch.common.transport.TransportAddress;
+import org.elasticsearch.common.unit.ByteSizeUnit;
+import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
+import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentHelper;
+import org.elasticsearch.common.xcontent.json.JsonXContent;
+import org.elasticsearch.common.xcontent.support.XContentMapValues;
+import org.elasticsearch.discovery.Discovery;
+import org.elasticsearch.discovery.DiscoveryModule;
+import org.elasticsearch.discovery.zen.ElectMasterService;
+import org.elasticsearch.discovery.zen.ZenDiscovery;
+import org.elasticsearch.env.Environment;
+import org.elasticsearch.env.NodeEnvironment;
+import org.elasticsearch.index.Index;
+import org.elasticsearch.index.IndexModule;
+import org.elasticsearch.index.IndexService;
+import org.elasticsearch.index.IndexSettings;
+import org.elasticsearch.index.MergePolicyConfig;
+import org.elasticsearch.index.MergeSchedulerConfig;
+import org.elasticsearch.index.MockEngineFactoryPlugin;
+import org.elasticsearch.index.codec.CodecService;
+import org.elasticsearch.index.mapper.DocumentMapper;
+import org.elasticsearch.index.translog.Translog;
+import org.elasticsearch.indices.IndicesQueryCache;
+import org.elasticsearch.indices.IndicesRequestCache;
+import org.elasticsearch.indices.IndicesService;
+import org.elasticsearch.indices.store.IndicesStore;
+import org.elasticsearch.node.NodeMocksPlugin;
+import org.elasticsearch.plugins.Plugin;
+import org.elasticsearch.rest.RestStatus;
+import org.elasticsearch.script.ScriptService;
+import org.elasticsearch.search.MockSearchService;
+import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.test.client.RandomizingClient;
+import org.elasticsearch.test.disruption.ServiceDisruptionScheme;
+import org.elasticsearch.test.store.MockFSIndexStore;
+import org.elasticsearch.test.transport.AssertingLocalTransport;
+import org.elasticsearch.test.transport.MockTransportService;
+import org.elasticsearch.transport.MockTcpTransportPlugin;
+import org.hamcrest.Matchers;
+import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.Before;
+import org.junit.BeforeClass;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.annotation.Annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.URL;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+import static org.elasticsearch.client.Requests.syncedFlushRequest;
+import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_REPLICAS;
+import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_SHARDS;
+import static org.elasticsearch.common.util.CollectionUtils.eagerPartition;
+import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
+import static org.elasticsearch.test.XContentTestUtils.convertToMap;
+import static org.elasticsearch.test.XContentTestUtils.differenceBetweenMapsIgnoringArrayOrder;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoTimeout;
+import static org.hamcrest.Matchers.emptyArray;
+import static org.hamcrest.Matchers.emptyIterable;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.startsWith;
+
+@LuceneTestCase.SuppressFileSystems("ExtrasFS")
+public abstract class ESIntegTestCase extends ESTestCase {
+
+    public static final String SYSPROP_THIRDPARTY = "tests.thirdparty";
+
+    @Inherited
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.TYPE)
+    @TestGroup(enabled = false, sysProperty = ESIntegTestCase.SYSPROP_THIRDPARTY)
+    public @interface ThirdParty {
+    }
+
+    public static final String SUITE_CLUSTER_NODE_PREFIX = "node_s";
+
+    public static final String TEST_CLUSTER_NODE_PREFIX = "node_t";
+
+    public static final String TESTS_CLIENT_RATIO = "tests.client.ratio";
+
+    public static final String TESTS_CLUSTER = "tests.cluster";
+
+    public static final Setting<Long> INDEX_TEST_SEED_SETTING = Setting.longSetting("index.tests.seed", 0, Long.MIN_VALUE, Property.IndexScope);
+
+    public static final String TESTS_ENABLE_MOCK_MODULES = "tests.enable_mock_modules";
+
+    private static final int FREQUENT_BULK_THRESHOLD = 300;
+
+    private static final int ALWAYS_BULK_THRESHOLD = 3000;
+
+    private static final int MAX_IN_FLIGHT_ASYNC_INDEXES = 150;
+
+    private static final int MAX_BULK_INDEX_REQUEST_SIZE = 1000;
+
+    protected static final int DEFAULT_MIN_NUM_SHARDS = 1;
+
+    protected static final int DEFAULT_MAX_NUM_SHARDS = 10;
+
+    private static TestCluster currentCluster;
+
+    private static RestClient restClient = null;
+
+    private static final double TRANSPORT_CLIENT_RATIO = transportClientRatio();
+
+    private static final Map<Class<?>, TestCluster> clusters = new IdentityHashMap<>();
+
+    private static ESIntegTestCase INSTANCE = null;
+
+    private static Long SUITE_SEED = null;
+
+    @BeforeClass
+    public static void beforeClass() throws Exception {
+        SUITE_SEED = randomLong();
+        initializeSuiteScope();
+    }
+
+    protected final void beforeInternal() throws Exception {
+        final Scope currentClusterScope = getCurrentClusterScope();
+        switch(currentClusterScope) {
+            case SUITE:
+                assert SUITE_SEED != null : "Suite seed was not initialized";
+                currentCluster = buildAndPutCluster(currentClusterScope, SUITE_SEED);
+                break;
+            case TEST:
+                currentCluster = buildAndPutCluster(currentClusterScope, randomLong());
+                break;
+            default:
+                fail("Unknown Scope: [" + currentClusterScope + "]");
+        }
+        cluster().beforeTest(random(), getPerTestTransportClientRatio());
+        cluster().wipe(excludeTemplates());
+        randomIndexTemplate();
+    }
+
+    private void printTestMessage(String message) {
+        if (isSuiteScopedTest(getClass()) && (getTestName().equals("<unknown>"))) {
+            logger.info("[{}]: {} suite", getTestClass().getSimpleName(), message);
+        } else {
+            logger.info("[{}#{}]: {} test", getTestClass().getSimpleName(), getTestName(), message);
+        }
+    }
+
+    public void randomIndexTemplate() throws IOException {
+        if (cluster().size() > 0) {
+            Settings.Builder randomSettingsBuilder = setRandomIndexSettings(random(), Settings.builder());
+            if (isInternalCluster()) {
+                randomSettingsBuilder.put(INDEX_TEST_SEED_SETTING.getKey(), random().nextLong());
+            }
+            randomSettingsBuilder.put(SETTING_NUMBER_OF_SHARDS, numberOfShards()).put(SETTING_NUMBER_OF_REPLICAS, numberOfReplicas());
+            SuppressCodecs annotation = getClass().getAnnotation(SuppressCodecs.class);
+            if (annotation != null && annotation.value().length == 1 && "*".equals(annotation.value()[0])) {
+                randomSettingsBuilder.put("index.codec", randomFrom(CodecService.DEFAULT_CODEC, CodecService.BEST_COMPRESSION_CODEC));
+            } else {
+                randomSettingsBuilder.put("index.codec", CodecService.LUCENE_DEFAULT_CODEC);
+            }
+            XContentBuilder mappings = null;
+            if (frequently() && randomDynamicTemplates()) {
+                mappings = XContentFactory.jsonBuilder().startObject().startObject("_default_").endObject().endObject();
+            }
+            for (String setting : randomSettingsBuilder.internalMap().keySet()) {
+                assertThat("non index. prefix setting set on index template, its a node setting...", setting, startsWith("index."));
+            }
+            randomSettingsBuilder.put(UnassignedInfo.INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING.getKey(), 0);
+            if (randomBoolean()) {
+                randomSettingsBuilder.put(IndexModule.INDEX_QUERY_CACHE_ENABLED_SETTING.getKey(), randomBoolean());
+            }
+            if (randomBoolean()) {
+                randomSettingsBuilder.put(IndexModule.INDEX_QUERY_CACHE_EVERYTHING_SETTING.getKey(), randomBoolean());
+            }
+            PutIndexTemplateRequestBuilder putTemplate = client().admin().indices().preparePutTemplate("random_index_template").setTemplate("*").setOrder(0).setSettings(randomSettingsBuilder);
+            if (mappings != null) {
+                logger.info("test using _default_ mappings: [{}]", mappings.bytes().utf8ToString());
+                putTemplate.addMapping("_default_", mappings);
+            }
+            assertAcked(putTemplate.execute().actionGet());
+        }
+    }
+
+    protected Settings.Builder setRandomIndexSettings(Random random, Settings.Builder builder) {
+        setRandomIndexMergeSettings(random, builder);
+        setRandomIndexTranslogSettings(random, builder);
+        if (random.nextBoolean()) {
+            builder.put(MergeSchedulerConfig.AUTO_THROTTLE_SETTING.getKey(), false);
+        }
+        if (random.nextBoolean()) {
+            builder.put(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING.getKey(), random.nextBoolean());
+        }
+        if (random.nextBoolean()) {
+            builder.put(IndexSettings.INDEX_CHECK_ON_STARTUP.getKey(), randomFrom("false", "checksum", "true"));
+        }
+        if (randomBoolean()) {
+            builder.put(UnassignedInfo.INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING.getKey(), RandomInts.randomIntBetween(random, 1, 15) + "ms");
+        }
+        return builder;
+    }
+
+    private static Settings.Builder setRandomIndexMergeSettings(Random random, Settings.Builder builder) {
+        if (random.nextBoolean()) {
+            builder.put(MergePolicyConfig.INDEX_COMPOUND_FORMAT_SETTING.getKey(), random.nextBoolean() ? random.nextDouble() : random.nextBoolean());
+        }
+        switch(random.nextInt(4)) {
+            case 3:
+                final int maxThreadCount = RandomInts.randomIntBetween(random, 1, 4);
+                final int maxMergeCount = RandomInts.randomIntBetween(random, maxThreadCount, maxThreadCount + 4);
+                builder.put(MergeSchedulerConfig.MAX_MERGE_COUNT_SETTING.getKey(), maxMergeCount);
+                builder.put(MergeSchedulerConfig.MAX_THREAD_COUNT_SETTING.getKey(), maxThreadCount);
+                break;
+        }
+        return builder;
+    }
+
+    private static Settings.Builder setRandomIndexTranslogSettings(Random random, Settings.Builder builder) {
+        if (random.nextBoolean()) {
+            builder.put(IndexSettings.INDEX_TRANSLOG_FLUSH_THRESHOLD_SIZE_SETTING.getKey(), new ByteSizeValue(RandomInts.randomIntBetween(random, 1, 300), ByteSizeUnit.MB));
+        }
+        if (random.nextBoolean()) {
+            builder.put(IndexSettings.INDEX_TRANSLOG_FLUSH_THRESHOLD_SIZE_SETTING.getKey(), new ByteSizeValue(1, ByteSizeUnit.PB));
+        }
+        if (random.nextBoolean()) {
+            builder.put(IndexSettings.INDEX_TRANSLOG_DURABILITY_SETTING.getKey(), RandomPicks.randomFrom(random, Translog.Durability.values()));
+        }
+        if (random.nextBoolean()) {
+            builder.put(IndexSettings.INDEX_TRANSLOG_SYNC_INTERVAL_SETTING.getKey(), RandomInts.randomIntBetween(random, 100, 5000), TimeUnit.MILLISECONDS);
+        }
+        return builder;
+    }
+
+    private TestCluster buildWithPrivateContext(final Scope scope, final long seed) throws Exception {
+        return RandomizedContext.current().runWithPrivateRandomness(new com.carrotsearch.randomizedtesting.Randomness(seed), new Callable<TestCluster>() {
+
+            @Override
+            public TestCluster call() throws Exception {
+                return buildTestCluster(scope, seed);
+            }
+        });
+    }
+
+    private TestCluster buildAndPutCluster(Scope currentClusterScope, long seed) throws Exception {
+        final Class<?> clazz = this.getClass();
+        TestCluster testCluster = clusters.remove(clazz);
+        clearClusters();
+        switch(currentClusterScope) {
+            case SUITE:
+                if (testCluster == null) {
+                    testCluster = buildWithPrivateContext(currentClusterScope, seed);
+                }
+                break;
+            case TEST:
+                IOUtils.closeWhileHandlingException(testCluster);
+                testCluster = buildTestCluster(currentClusterScope, seed);
+                break;
+        }
+        clusters.put(clazz, testCluster);
+        return testCluster;
+    }
+
+    private static void clearClusters() throws IOException {
+        if (!clusters.isEmpty()) {
+            IOUtils.close(clusters.values());
+            clusters.clear();
+        }
+        if (restClient != null) {
+            restClient.close();
+            restClient = null;
+        }
+    }
+
+    protected final void afterInternal(boolean afterClass) throws Exception {
+        boolean success = false;
+        try {
+            final Scope currentClusterScope = getCurrentClusterScope();
+            clearDisruptionScheme();
+            try {
+                if (cluster() != null) {
+                    if (currentClusterScope != Scope.TEST) {
+                        MetaData metaData = client().admin().cluster().prepareState().execute().actionGet().getState().getMetaData();
+                        assertThat("test leaves persistent cluster metadata behind: " + metaData.persistentSettings().getAsMap(), metaData.persistentSettings().getAsMap().size(), equalTo(0));
+                        assertThat("test leaves transient cluster metadata behind: " + metaData.transientSettings().getAsMap(), metaData.transientSettings().getAsMap().size(), equalTo(0));
+                    }
+                    ensureClusterSizeConsistency();
+                    ensureClusterStateConsistency();
+                    if (isInternalCluster()) {
+                        for (Discovery discovery : internalCluster().getInstances(Discovery.class)) {
+                            if (discovery instanceof ZenDiscovery) {
+                                final ZenDiscovery zenDiscovery = (ZenDiscovery) discovery;
+                                assertBusy(new Runnable() {
+
+                                    @Override
+                                    public void run() {
+                                        assertThat("still having pending states: " + Strings.arrayToDelimitedString(zenDiscovery.pendingClusterStates(), "\n"), zenDiscovery.pendingClusterStates(), emptyArray());
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    beforeIndexDeletion();
+                    cluster().wipe(excludeTemplates());
+                    if (afterClass || currentClusterScope == Scope.TEST) {
+                        cluster().close();
+                    }
+                    cluster().assertAfterTest();
+                }
+            } finally {
+                if (currentClusterScope == Scope.TEST) {
+                    clearClusters();
+                }
+            }
+            success = true;
+        } finally {
+            if (!success) {
+            }
+        }
+    }
+
+    protected Set<String> excludeTemplates() {
+        return Collections.emptySet();
+    }
+
+    protected void beforeIndexDeletion() throws Exception {
+        cluster().beforeIndexDeletion();
+    }
+
+    public static TestCluster cluster() {
+        return currentCluster;
+    }
+
+    public static boolean isInternalCluster() {
+        return (currentCluster instanceof InternalTestCluster);
+    }
+
+    public static InternalTestCluster internalCluster() {
+        if (!isInternalCluster()) {
+            throw new UnsupportedOperationException("current test cluster is immutable");
+        }
+        return (InternalTestCluster) currentCluster;
+    }
+
+    public ClusterService clusterService() {
+        return internalCluster().clusterService();
+    }
+
+    public static Client client() {
+        return client(null);
+    }
+
+    public static Client client(@Nullable String node) {
+        if (node != null) {
+            return internalCluster().client(node);
+        }
+        Client client = cluster().client();
+        if (frequently()) {
+            client = new RandomizingClient(client, random());
+        }
+        return client;
+    }
+
+    public static Client dataNodeClient() {
+        Client client = internalCluster().dataNodeClient();
+        if (frequently()) {
+            client = new RandomizingClient(client, random());
+        }
+        return client;
+    }
+
+    public static Iterable<Client> clients() {
+        return cluster().getClients();
+    }
+
+    protected int minimumNumberOfShards() {
+        return DEFAULT_MIN_NUM_SHARDS;
+    }
+
+    protected int maximumNumberOfShards() {
+        return DEFAULT_MAX_NUM_SHARDS;
+    }
+
+    protected int numberOfShards() {
+        return between(minimumNumberOfShards(), maximumNumberOfShards());
+    }
+
+    protected int minimumNumberOfReplicas() {
+        return 0;
+    }
+
+    protected int maximumNumberOfReplicas() {
+        int maxNumReplicas = Math.max(0, cluster().numDataNodes() - 1);
+        return frequently() ? Math.min(1, maxNumReplicas) : maxNumReplicas;
+    }
+
+    protected int numberOfReplicas() {
+        return between(minimumNumberOfReplicas(), maximumNumberOfReplicas());
+    }
+
+    public void setDisruptionScheme(ServiceDisruptionScheme scheme) {
+        internalCluster().setDisruptionScheme(scheme);
+    }
+
+    public void clearDisruptionScheme() {
+        if (isInternalCluster()) {
+            internalCluster().clearDisruptionScheme();
+        }
+    }
+
+    public Settings indexSettings() {
+        Settings.Builder builder = Settings.builder();
+        int numberOfShards = numberOfShards();
+        if (numberOfShards > 0) {
+            builder.put(SETTING_NUMBER_OF_SHARDS, numberOfShards).build();
+        }
+        int numberOfReplicas = numberOfReplicas();
+        if (numberOfReplicas >= 0) {
+            builder.put(SETTING_NUMBER_OF_REPLICAS, numberOfReplicas).build();
+        }
+        if (randomInt(9) < 3) {
+            final String dataPath = randomAsciiOfLength(10);
+            logger.info("using custom data_path for index: [{}]", dataPath);
+            builder.put(IndexMetaData.SETTING_DATA_PATH, dataPath);
+        }
+        builder.put(UnassignedInfo.INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING.getKey(), 0);
+        return builder.build();
+    }
+
+    public final void createIndex(String... names) {
+        List<String> created = new ArrayList<>();
+        for (String name : names) {
+            boolean success = false;
+            try {
+                assertAcked(prepareCreate(name));
+                created.add(name);
+                success = true;
+            } finally {
+                if (!success && !created.isEmpty()) {
+                    cluster().wipeIndices(created.toArray(new String[created.size()]));
+                }
+            }
+        }
+    }
+
+    public final CreateIndexRequestBuilder prepareCreate(String index) {
+        return prepareCreate(index, -1);
+    }
+
+    public final CreateIndexRequestBuilder prepareCreate(String index, int numNodes) {
+        return prepareCreate(index, numNodes, Settings.builder());
+    }
+
+    public CreateIndexRequestBuilder prepareCreate(String index, Settings.Builder settingsBuilder) {
+        return prepareCreate(index, -1, settingsBuilder);
+    }
+
+    public CreateIndexRequestBuilder prepareCreate(String index, int numNodes, Settings.Builder settingsBuilder) {
+        Settings.Builder builder = Settings.builder().put(indexSettings()).put(settingsBuilder.build());
+        if (numNodes > 0) {
+            internalCluster().ensureAtLeastNumDataNodes(numNodes);
+            getExcludeSettings(index, numNodes, builder);
+        }
+        return client().admin().indices().prepareCreate(index).setSettings(builder.build());
+    }
+
+    private Settings.Builder getExcludeSettings(String index, int num, Settings.Builder builder) {
+        String exclude = String.join(",", internalCluster().allDataNodesButN(num));
+        builder.put("index.routing.allocation.exclude._name", exclude);
+        return builder;
+    }
+
+    public void waitNoPendingTasksOnAll() throws Exception {
+        assertNoTimeout(client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).get());
+        assertBusy(new Runnable() {
+
+            @Override
+            public void run() {
+                for (Client client : clients()) {
+                    ClusterHealthResponse clusterHealth = client.admin().cluster().prepareHealth().setLocal(true).get();
+                    assertThat("client " + client + " still has in flight fetch", clusterHealth.getNumberOfInFlightFetch(), equalTo(0));
+                    PendingClusterTasksResponse pendingTasks = client.admin().cluster().preparePendingClusterTasks().setLocal(true).get();
+                    assertThat("client " + client + " still has pending tasks " + pendingTasks.prettyPrint(), pendingTasks, Matchers.emptyIterable());
+                    clusterHealth = client.admin().cluster().prepareHealth().setLocal(true).get();
+                    assertThat("client " + client + " still has in flight fetch", clusterHealth.getNumberOfInFlightFetch(), equalTo(0));
+                }
+            }
+        });
+        assertNoTimeout(client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).get());
+    }
+
+    public void assertConcreteMappingsOnAll(final String index, final String type, final String... fieldNames) throws Exception {
+        Set<String> nodes = internalCluster().nodesInclude(index);
+        assertThat(nodes, Matchers.not(Matchers.emptyIterable()));
+        for (String node : nodes) {
+            IndicesService indicesService = internalCluster().getInstance(IndicesService.class, node);
+            IndexService indexService = indicesService.indexService(resolveIndex(index));
+            assertThat("index service doesn't exists on " + node, indexService, notNullValue());
+            DocumentMapper documentMapper = indexService.mapperService().documentMapper(type);
+            assertThat("document mapper doesn't exists on " + node, documentMapper, notNullValue());
+            for (String fieldName : fieldNames) {
+                Collection<String> matches = documentMapper.mappers().simpleMatchToFullName(fieldName);
+                assertThat("field " + fieldName + " doesn't exists on " + node, matches, Matchers.not(emptyIterable()));
+            }
+        }
+        assertMappingOnMaster(index, type, fieldNames);
+    }
+
+    public void assertMappingOnMaster(final String index, final String type, final String... fieldNames) throws Exception {
+        GetMappingsResponse response = client().admin().indices().prepareGetMappings(index).setTypes(type).get();
+        ImmutableOpenMap<String, MappingMetaData> mappings = response.getMappings().get(index);
+        assertThat(mappings, notNullValue());
+        MappingMetaData mappingMetaData = mappings.get(type);
+        assertThat(mappingMetaData, notNullValue());
+        Map<String, Object> mappingSource = mappingMetaData.getSourceAsMap();
+        assertFalse(mappingSource.isEmpty());
+        assertTrue(mappingSource.containsKey("properties"));
+        for (String fieldName : fieldNames) {
+            Map<String, Object> mappingProperties = (Map<String, Object>) mappingSource.get("properties");
+            if (fieldName.indexOf('.') != -1) {
+                fieldName = fieldName.replace(".", ".properties.");
+            }
+            assertThat("field " + fieldName + " doesn't exists in mapping " + mappingMetaData.source().string(), XContentMapValues.extractValue(fieldName, mappingProperties), notNullValue());
+        }
+    }
+
+    public void assertResultsAndLogOnFailure(long expectedResults, SearchResponse searchResponse) {
+        if (searchResponse.getHits().getTotalHits() != expectedResults) {
+            StringBuilder sb = new StringBuilder("search result contains [");
+            sb.append(searchResponse.getHits().getTotalHits()).append("] results. expected [").append(expectedResults).append("]");
+            String failMsg = sb.toString();
+            for (SearchHit hit : searchResponse.getHits().getHits()) {
+                sb.append("\n-> _index: [").append(hit.getIndex()).append("] type [").append(hit.getType()).append("] id [").append(hit.id()).append("]");
+            }
+            logger.warn("{}", sb);
+            fail(failMsg);
+        }
+    }
+
+    public void allowNodes(String index, int n) {
+        assert index != null;
+        internalCluster().ensureAtLeastNumDataNodes(n);
+        Settings.Builder builder = Settings.builder();
+        if (n > 0) {
+            getExcludeSettings(index, n, builder);
+        }
+        Settings build = builder.build();
+        if (!build.getAsMap().isEmpty()) {
+            logger.debug("allowNodes: updating [{}]'s setting to [{}]", index, build.toDelimitedString(';'));
+            client().admin().indices().prepareUpdateSettings(index).setSettings(build).execute().actionGet();
+        }
+    }
+
+    public ClusterHealthStatus ensureGreen(String... indices) {
+        return ensureGreen(TimeValue.timeValueSeconds(30), indices);
+    }
+
+    public ClusterHealthStatus ensureGreen(TimeValue timeout, String... indices) {
+        ClusterHealthResponse actionGet = client().admin().cluster().health(Requests.clusterHealthRequest(indices).timeout(timeout).waitForGreenStatus().waitForEvents(Priority.LANGUID).waitForNoRelocatingShards(true)).actionGet();
+        if (actionGet.isTimedOut()) {
+            logger.info("ensureGreen timed out, cluster state:\n{}\n{}", client().admin().cluster().prepareState().get().getState().prettyPrint(), client().admin().cluster().preparePendingClusterTasks().get().prettyPrint());
+            fail("timed out waiting for green state");
+        }
+        assertThat(actionGet.getStatus(), equalTo(ClusterHealthStatus.GREEN));
+        logger.debug("indices {} are green", indices.length == 0 ? "[_all]" : indices);
+        return actionGet.getStatus();
+    }
+
+    public ClusterHealthStatus waitForRelocation() {
+        return waitForRelocation(null);
+    }
+
+    public ClusterHealthStatus waitForRelocation(ClusterHealthStatus status) {
+        ClusterHealthRequest request = Requests.clusterHealthRequest().waitForNoRelocatingShards(true);
+        if (status != null) {
+            request.waitForStatus(status);
+        }
+        ClusterHealthResponse actionGet = client().admin().cluster().health(request).actionGet();
+        if (actionGet.isTimedOut()) {
+            logger.info("waitForRelocation timed out (status={}), cluster state:\n{}\n{}", status, client().admin().cluster().prepareState().get().getState().prettyPrint(), client().admin().cluster().preparePendingClusterTasks().get().prettyPrint());
+            assertThat("timed out waiting for relocation", actionGet.isTimedOut(), equalTo(false));
+        }
+        if (status != null) {
+            assertThat(actionGet.getStatus(), equalTo(status));
+        }
+        return actionGet.getStatus();
+    }
+
+    public long waitForDocs(final long numDocs) throws InterruptedException {
+        return waitForDocs(numDocs, null);
+    }
+
+    public long waitForDocs(final long numDocs, @Nullable final BackgroundIndexer indexer) throws InterruptedException {
+        return waitForDocs(numDocs, 90, TimeUnit.SECONDS, indexer);
+    }
+
+    public long waitForDocs(final long numDocs, int maxWaitTime, TimeUnit maxWaitTimeUnit, @Nullable final BackgroundIndexer indexer) throws InterruptedException {
+        final AtomicLong lastKnownCount = new AtomicLong(-1);
+        long lastStartCount = -1;
+        BooleanSupplier testDocs = () -> {
+            if (indexer != null) {
+                lastKnownCount.set(indexer.totalIndexedDocs());
+            }
+            if (lastKnownCount.get() >= numDocs) {
+                try {
+                    long count = client().prepareSearch().setSize(0).setQuery(matchAllQuery()).execute().actionGet().getHits().totalHits();
+                    if (count == lastKnownCount.get()) {
+                        client().admin().indices().prepareRefresh().get();
+                    }
+                    lastKnownCount.set(count);
+                } catch (Exception e) {
+                    logger.debug("failed to executed count", e);
+                    return false;
+                }
+                logger.debug("[{}] docs visible for search. waiting for [{}]", lastKnownCount.get(), numDocs);
+            } else {
+                logger.debug("[{}] docs indexed. waiting for [{}]", lastKnownCount.get(), numDocs);
+            }
+            return lastKnownCount.get() >= numDocs;
+        };
+        while (!awaitBusy(testDocs, maxWaitTime, maxWaitTimeUnit)) {
+            if (lastStartCount == lastKnownCount.get()) {
+                fail("failed to reach " + numDocs + "docs");
+            }
+            lastStartCount = lastKnownCount.get();
+        }
+        return lastKnownCount.get();
+    }
+
+    public void setMinimumMasterNodes(int n) {
+        assertTrue(client().admin().cluster().prepareUpdateSettings().setTransientSettings(Settings.builder().put(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING.getKey(), n)).get().isAcknowledged());
+    }
+
+    public ClusterHealthStatus ensureYellow(String... indices) {
+        ClusterHealthResponse actionGet = client().admin().cluster().health(Requests.clusterHealthRequest(indices).waitForNoRelocatingShards(true).waitForYellowStatus().waitForEvents(Priority.LANGUID)).actionGet();
+        if (actionGet.isTimedOut()) {
+            logger.info("ensureYellow timed out, cluster state:\n{}\n{}", client().admin().cluster().prepareState().get().getState().prettyPrint(), client().admin().cluster().preparePendingClusterTasks().get().prettyPrint());
+            assertThat("timed out waiting for yellow", actionGet.isTimedOut(), equalTo(false));
+        }
+        logger.debug("indices {} are yellow", indices.length == 0 ? "[_all]" : indices);
+        return actionGet.getStatus();
+    }
+
+    public void logClusterState() {
+        logger.debug("cluster state:\n{}\n{}", client().admin().cluster().prepareState().get().getState().prettyPrint(), client().admin().cluster().preparePendingClusterTasks().get().prettyPrint());
+    }
+
+    public void logSegmentsState(String... indices) throws Exception {
+        IndicesSegmentResponse segsRsp = client().admin().indices().prepareSegments(indices).get();
+        logger.debug("segments {} state: \n{}", indices.length == 0 ? "[_all]" : indices, segsRsp.toXContent(JsonXContent.contentBuilder().prettyPrint(), ToXContent.EMPTY_PARAMS).string());
+    }
+
+    public void logMemoryStats() {
+        logger.info("memory: {}", XContentHelper.toString(client().admin().cluster().prepareNodesStats().clear().setJvm(true).get()));
+    }
+
+    protected void ensureClusterSizeConsistency() {
+        if (cluster() != null) {
+            logger.trace("Check consistency for [{}] nodes", cluster().size());
+            assertNoTimeout(client().admin().cluster().prepareHealth().setWaitForNodes(Integer.toString(cluster().size())).get());
+        }
+    }
+
+    protected void ensureClusterStateConsistency() throws IOException {
+        if (cluster() != null) {
+            ClusterState masterClusterState = client().admin().cluster().prepareState().all().get().getState();
+            byte[] masterClusterStateBytes = ClusterState.Builder.toBytes(masterClusterState);
+            masterClusterState = ClusterState.Builder.fromBytes(masterClusterStateBytes, null);
+            Map<String, Object> masterStateMap = convertToMap(masterClusterState);
+            int masterClusterStateSize = ClusterState.Builder.toBytes(masterClusterState).length;
+            String masterId = masterClusterState.nodes().getMasterNodeId();
+            for (Client client : cluster().getClients()) {
+                ClusterState localClusterState = client.admin().cluster().prepareState().all().setLocal(true).get().getState();
+                byte[] localClusterStateBytes = ClusterState.Builder.toBytes(localClusterState);
+                localClusterState = ClusterState.Builder.fromBytes(localClusterStateBytes, null);
+                final Map<String, Object> localStateMap = convertToMap(localClusterState);
+                final int localClusterStateSize = ClusterState.Builder.toBytes(localClusterState).length;
+                if (masterClusterState.version() == localClusterState.version() && masterId.equals(localClusterState.nodes().getMasterNodeId())) {
+                    try {
+                        assertEquals("clusterstate UUID does not match", masterClusterState.stateUUID(), localClusterState.stateUUID());
+                        assertEquals("clusterstate size does not match", masterClusterStateSize, localClusterStateSize);
+                        assertNull("clusterstate JSON serialization does not match", differenceBetweenMapsIgnoringArrayOrder(masterStateMap, localStateMap));
+                    } catch (AssertionError error) {
+                        logger.error("Cluster state from master:\n{}\nLocal cluster state:\n{}", masterClusterState.toString(), localClusterState.toString());
+                        throw error;
+                    }
+                }
+            }
+        }
+    }
+
+    protected ClusterHealthStatus ensureSearchable(String... indices) {
+        return ensureGreen(indices);
+    }
+
+    protected void ensureStableCluster(int nodeCount) {
+        ensureStableCluster(nodeCount, TimeValue.timeValueSeconds(30));
+    }
+
+    protected void ensureStableCluster(int nodeCount, TimeValue timeValue) {
+        ensureStableCluster(nodeCount, timeValue, false, null);
+    }
+
+    protected void ensureStableCluster(int nodeCount, @Nullable String viaNode) {
+        ensureStableCluster(nodeCount, TimeValue.timeValueSeconds(30), false, viaNode);
+    }
+
+    protected void ensureStableCluster(int nodeCount, TimeValue timeValue, boolean local, @Nullable String viaNode) {
+        if (viaNode == null) {
+            viaNode = randomFrom(internalCluster().getNodeNames());
+        }
+        logger.debug("ensuring cluster is stable with [{}] nodes. access node: [{}]. timeout: [{}]", nodeCount, viaNode, timeValue);
+        ClusterHealthResponse clusterHealthResponse = client(viaNode).admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).setWaitForNodes(Integer.toString(nodeCount)).setTimeout(timeValue).setLocal(local).setWaitForNoRelocatingShards(true).get();
+        if (clusterHealthResponse.isTimedOut()) {
+            ClusterStateResponse stateResponse = client(viaNode).admin().cluster().prepareState().get();
+            fail("failed to reach a stable cluster of [" + nodeCount + "] nodes. Tried via [" + viaNode + "]. last cluster state:\n" + stateResponse.getState().prettyPrint());
+        }
+        assertThat(clusterHealthResponse.isTimedOut(), is(false));
+    }
+
+    protected final IndexResponse index(String index, String type, XContentBuilder source) {
+        return client().prepareIndex(index, type).setSource(source).execute().actionGet();
+    }
+
+    protected final IndexResponse index(String index, String type, String id, Map<String, Object> source) {
+        return client().prepareIndex(index, type, id).setSource(source).execute().actionGet();
+    }
+
+    protected final GetResponse get(String index, String type, String id) {
+        return client().prepareGet(index, type, id).execute().actionGet();
+    }
+
+    protected final IndexResponse index(String index, String type, String id, XContentBuilder source) {
+        return client().prepareIndex(index, type, id).setSource(source).execute().actionGet();
+    }
+
+    protected final IndexResponse index(String index, String type, String id, Object... source) {
+        return client().prepareIndex(index, type, id).setSource(source).execute().actionGet();
+    }
+
+    protected final IndexResponse index(String index, String type, String id, String source) {
+        return client().prepareIndex(index, type, id).setSource(source).execute().actionGet();
+    }
+
+    protected final RefreshResponse refresh(String... indices) {
+        waitForRelocation();
+        RefreshResponse actionGet = client().admin().indices().prepareRefresh(indices).execute().actionGet();
+        assertNoFailures(actionGet);
+        return actionGet;
+    }
+
+    protected final void flushAndRefresh(String... indices) {
+        flush(indices);
+        refresh(indices);
+    }
+
+    protected final FlushResponse flush(String... indices) {
+        waitForRelocation();
+        FlushResponse actionGet = client().admin().indices().prepareFlush(indices).execute().actionGet();
+        for (ShardOperationFailedException failure : actionGet.getShardFailures()) {
+            assertThat("unexpected flush failure " + failure.reason(), failure.status(), equalTo(RestStatus.SERVICE_UNAVAILABLE));
+        }
+        return actionGet;
+    }
+
+    protected ForceMergeResponse forceMerge() {
+        waitForRelocation();
+        ForceMergeResponse actionGet = client().admin().indices().prepareForceMerge().setMaxNumSegments(1).execute().actionGet();
+        assertNoFailures(actionGet);
+        return actionGet;
+    }
+
+    protected boolean indexExists(String index) {
+        IndicesExistsResponse actionGet = client().admin().indices().prepareExists(index).execute().actionGet();
+        return actionGet.isExists();
+    }
+
+    protected final void enableAllocation(String... indices) {
+        client().admin().indices().prepareUpdateSettings(indices).setSettings(Settings.builder().put(EnableAllocationDecider.INDEX_ROUTING_ALLOCATION_ENABLE_SETTING.getKey(), "all")).get();
+    }
+
+    protected final void disableAllocation(String... indices) {
+        client().admin().indices().prepareUpdateSettings(indices).setSettings(Settings.builder().put(EnableAllocationDecider.INDEX_ROUTING_ALLOCATION_ENABLE_SETTING.getKey(), "none")).get();
+    }
+
+    protected AdminClient admin() {
+        return client().admin();
+    }
+
+    public void indexRandom(boolean forceRefresh, IndexRequestBuilder... builders) throws InterruptedException, ExecutionException {
+        indexRandom(forceRefresh, Arrays.asList(builders));
+    }
+
+    public void indexRandom(boolean forceRefresh, boolean dummyDocuments, IndexRequestBuilder... builders) throws InterruptedException, ExecutionException {
+        indexRandom(forceRefresh, dummyDocuments, Arrays.asList(builders));
+    }
+
+    private static final String RANDOM_BOGUS_TYPE = "RANDOM_BOGUS_TYPE______";
+
+    public void indexRandom(boolean forceRefresh, List<IndexRequestBuilder> builders) throws InterruptedException, ExecutionException {
+        indexRandom(forceRefresh, forceRefresh, builders);
+    }
+
+    public void indexRandom(boolean forceRefresh, boolean dummyDocuments, List<IndexRequestBuilder> builders) throws InterruptedException, ExecutionException {
+        indexRandom(forceRefresh, dummyDocuments, true, builders);
+    }
+
+    public void indexRandom(boolean forceRefresh, boolean dummyDocuments, boolean maybeFlush, List<IndexRequestBuilder> builders) throws InterruptedException, ExecutionException {
+        Random random = random();
+        Set<String> indicesSet = new HashSet<>();
+        for (IndexRequestBuilder builder : builders) {
+            indicesSet.add(builder.request().index());
+        }
+        Set<Tuple<String, String>> bogusIds = new HashSet<>();
+        if (random.nextBoolean() && !builders.isEmpty() && dummyDocuments) {
+            builders = new ArrayList<>(builders);
+            final String[] indices = indicesSet.toArray(new String[indicesSet.size()]);
+            final int numBogusDocs = scaledRandomIntBetween(1, builders.size() * 2);
+            final int unicodeLen = between(1, 10);
+            for (int i = 0; i < numBogusDocs; i++) {
+                String id = randomRealisticUnicodeOfLength(unicodeLen) + Integer.toString(dummmyDocIdGenerator.incrementAndGet());
+                String index = RandomPicks.randomFrom(random, indices);
+                bogusIds.add(new Tuple<>(index, id));
+                builders.add(client().prepareIndex(index, RANDOM_BOGUS_TYPE, id).setSource("{}"));
+            }
+        }
+        final String[] indices = indicesSet.toArray(new String[indicesSet.size()]);
+        Collections.shuffle(builders, random());
+        final CopyOnWriteArrayList<Tuple<IndexRequestBuilder, Exception>> errors = new CopyOnWriteArrayList<>();
+        List<CountDownLatch> inFlightAsyncOperations = new ArrayList<>();
+        if (builders.size() < FREQUENT_BULK_THRESHOLD ? frequently() : builders.size() < ALWAYS_BULK_THRESHOLD ? rarely() : false) {
+            if (frequently()) {
+                logger.info("Index [{}] docs async: [{}] bulk: [{}]", builders.size(), true, false);
+                for (IndexRequestBuilder indexRequestBuilder : builders) {
+                    indexRequestBuilder.execute(new PayloadLatchedActionListener<IndexResponse, IndexRequestBuilder>(indexRequestBuilder, newLatch(inFlightAsyncOperations), errors));
+                    postIndexAsyncActions(indices, inFlightAsyncOperations, maybeFlush);
+                }
+            } else {
+                logger.info("Index [{}] docs async: [{}] bulk: [{}]", builders.size(), false, false);
+                for (IndexRequestBuilder indexRequestBuilder : builders) {
+                    indexRequestBuilder.execute().actionGet();
+                    postIndexAsyncActions(indices, inFlightAsyncOperations, maybeFlush);
+                }
+            }
+        } else {
+            List<List<IndexRequestBuilder>> partition = eagerPartition(builders, Math.min(MAX_BULK_INDEX_REQUEST_SIZE, Math.max(1, (int) (builders.size() * randomDouble()))));
+            logger.info("Index [{}] docs async: [{}] bulk: [{}] partitions [{}]", builders.size(), false, true, partition.size());
+            for (List<IndexRequestBuilder> segmented : partition) {
+                BulkRequestBuilder bulkBuilder = client().prepareBulk();
+                for (IndexRequestBuilder indexRequestBuilder : segmented) {
+                    bulkBuilder.add(indexRequestBuilder);
+                }
+                BulkResponse actionGet = bulkBuilder.execute().actionGet();
+                assertThat(actionGet.hasFailures() ? actionGet.buildFailureMessage() : "", actionGet.hasFailures(), equalTo(false));
+            }
+        }
+        for (CountDownLatch operation : inFlightAsyncOperations) {
+            operation.await();
+        }
+        final List<Exception> actualErrors = new ArrayList<>();
+        for (Tuple<IndexRequestBuilder, Exception> tuple : errors) {
+            if (ExceptionsHelper.unwrapCause(tuple.v2()) instanceof EsRejectedExecutionException) {
+                tuple.v1().execute().actionGet();
+            } else {
+                actualErrors.add(tuple.v2());
+            }
+        }
+        assertThat(actualErrors, emptyIterable());
+        if (!bogusIds.isEmpty()) {
+            for (Tuple<String, String> doc : bogusIds) {
+                assertEquals("failed to delete a dummy doc [" + doc.v1() + "][" + doc.v2() + "]", DocWriteResponse.Result.DELETED, client().prepareDelete(doc.v1(), RANDOM_BOGUS_TYPE, doc.v2()).get().getResult());
+            }
+        }
+        if (forceRefresh) {
+            assertNoFailures(client().admin().indices().prepareRefresh(indices).setIndicesOptions(IndicesOptions.lenientExpandOpen()).execute().get());
+        }
+    }
+
+    private AtomicInteger dummmyDocIdGenerator = new AtomicInteger();
+
+    public static void disableIndexBlock(String index, String block) {
+        Settings settings = Settings.builder().put(block, false).build();
+        client().admin().indices().prepareUpdateSettings(index).setSettings(settings).get();
+    }
+
+    public static void enableIndexBlock(String index, String block) {
+        Settings settings = Settings.builder().put(block, true).build();
+        client().admin().indices().prepareUpdateSettings(index).setSettings(settings).get();
+    }
+
+    public static void setClusterReadOnly(boolean value) {
+        Settings settings = Settings.builder().put(MetaData.SETTING_READ_ONLY_SETTING.getKey(), value).build();
+        assertAcked(client().admin().cluster().prepareUpdateSettings().setTransientSettings(settings).get());
+    }
+
+    private static CountDownLatch newLatch(List<CountDownLatch> latches) {
+        CountDownLatch l = new CountDownLatch(1);
+        latches.add(l);
+        return l;
+    }
+
+    private void postIndexAsyncActions(String[] indices, List<CountDownLatch> inFlightAsyncOperations, boolean maybeFlush) throws InterruptedException {
+        if (rarely()) {
+            if (rarely()) {
+                client().admin().indices().prepareRefresh(indices).setIndicesOptions(IndicesOptions.lenientExpandOpen()).execute(new LatchedActionListener<>(newLatch(inFlightAsyncOperations)));
+            } else if (maybeFlush && rarely()) {
+                if (randomBoolean()) {
+                    client().admin().indices().prepareFlush(indices).setIndicesOptions(IndicesOptions.lenientExpandOpen()).execute(new LatchedActionListener<>(newLatch(inFlightAsyncOperations)));
+                } else {
+                    client().admin().indices().syncedFlush(syncedFlushRequest(indices).indicesOptions(IndicesOptions.lenientExpandOpen()), new LatchedActionListener<>(newLatch(inFlightAsyncOperations)));
+                }
+            } else if (rarely()) {
+                client().admin().indices().prepareForceMerge(indices).setIndicesOptions(IndicesOptions.lenientExpandOpen()).setMaxNumSegments(between(1, 10)).setFlush(maybeFlush && randomBoolean()).execute(new LatchedActionListener<>(newLatch(inFlightAsyncOperations)));
+            }
+        }
+        while (inFlightAsyncOperations.size() > MAX_IN_FLIGHT_ASYNC_INDEXES) {
+            int waitFor = between(0, inFlightAsyncOperations.size() - 1);
+            inFlightAsyncOperations.remove(waitFor).await();
+        }
+    }
+
+    public enum Scope {
+
+        SUITE, TEST
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target({ ElementType.TYPE })
+    public @interface ClusterScope {
+
+        Scope scope() default Scope.SUITE;
+
+        int numDataNodes() default -1;
+
+        int minNumDataNodes() default -1;
+
+        int maxNumDataNodes() default -1;
+
+        boolean supportsDedicatedMasters() default true;
+
+        int numClientNodes() default InternalTestCluster.DEFAULT_NUM_CLIENT_NODES;
+
+        double transportClientRatio() default -1;
+
+        boolean randomDynamicTemplates() default true;
+    }
+
+    private class LatchedActionListener<Response> implements ActionListener<Response> {
+
+        private final CountDownLatch latch;
+
+        public LatchedActionListener(CountDownLatch latch) {
+            this.latch = latch;
+        }
+
+        @Override
+        public final void onResponse(Response response) {
+            latch.countDown();
+        }
+
+        @Override
+        public final void onFailure(Exception t) {
+            try {
+                logger.info("Action Failed", t);
+                addError(t);
+            } finally {
+                latch.countDown();
+            }
+        }
+
+        protected void addError(Exception e) {
+        }
+    }
+
+    private class PayloadLatchedActionListener<Response, T> extends LatchedActionListener<Response> {
+
+        private final CopyOnWriteArrayList<Tuple<T, Exception>> errors;
+
+        private final T builder;
+
+        public PayloadLatchedActionListener(T builder, CountDownLatch latch, CopyOnWriteArrayList<Tuple<T, Exception>> errors) {
+            super(latch);
+            this.errors = errors;
+            this.builder = builder;
+        }
+
+        @Override
+        protected void addError(Exception e) {
+            errors.add(new Tuple<>(builder, e));
+        }
+    }
+
+    public void clearScroll(String... scrollIds) {
+        ClearScrollResponse clearResponse = client().prepareClearScroll().setScrollIds(Arrays.asList(scrollIds)).get();
+        assertThat(clearResponse.isSucceeded(), equalTo(true));
+    }
+
+    private static <A extends Annotation> A getAnnotation(Class<?> clazz, Class<A> annotationClass) {
+        if (clazz == Object.class || clazz == ESIntegTestCase.class) {
+            return null;
+        }
+        A annotation = clazz.getAnnotation(annotationClass);
+        if (annotation != null) {
+            return annotation;
+        }
+        return getAnnotation(clazz.getSuperclass(), annotationClass);
+    }
+
+    private Scope getCurrentClusterScope() {
+        return getCurrentClusterScope(this.getClass());
+    }
+
+    private static Scope getCurrentClusterScope(Class<?> clazz) {
+        ClusterScope annotation = getAnnotation(clazz, ClusterScope.class);
+        return annotation == null ? Scope.SUITE : annotation.scope();
+    }
+
+    private boolean getSupportsDedicatedMasters() {
+        ClusterScope annotation = getAnnotation(this.getClass(), ClusterScope.class);
+        return annotation == null ? true : annotation.supportsDedicatedMasters();
+    }
+
+    private int getNumDataNodes() {
+        ClusterScope annotation = getAnnotation(this.getClass(), ClusterScope.class);
+        return annotation == null ? -1 : annotation.numDataNodes();
+    }
+
+    private int getMinNumDataNodes() {
+        ClusterScope annotation = getAnnotation(this.getClass(), ClusterScope.class);
+        return annotation == null || annotation.minNumDataNodes() == -1 ? InternalTestCluster.DEFAULT_MIN_NUM_DATA_NODES : annotation.minNumDataNodes();
+    }
+
+    private int getMaxNumDataNodes() {
+        ClusterScope annotation = getAnnotation(this.getClass(), ClusterScope.class);
+        return annotation == null || annotation.maxNumDataNodes() == -1 ? InternalTestCluster.DEFAULT_MAX_NUM_DATA_NODES : annotation.maxNumDataNodes();
+    }
+
+    private int getNumClientNodes() {
+        ClusterScope annotation = getAnnotation(this.getClass(), ClusterScope.class);
+        return annotation == null ? InternalTestCluster.DEFAULT_NUM_CLIENT_NODES : annotation.numClientNodes();
+    }
+
+    private boolean randomDynamicTemplates() {
+        ClusterScope annotation = getAnnotation(this.getClass(), ClusterScope.class);
+        return annotation == null || annotation.randomDynamicTemplates();
+    }
+
+    protected Settings nodeSettings(int nodeOrdinal) {
+        Settings.Builder builder = Settings.builder().put(NodeEnvironment.MAX_LOCAL_STORAGE_NODES_SETTING.getKey(), Integer.MAX_VALUE).put(DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_LOW_DISK_WATERMARK_SETTING.getKey(), "1b").put(DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_HIGH_DISK_WATERMARK_SETTING.getKey(), "1b").put(ScriptService.SCRIPT_MAX_COMPILATIONS_PER_MINUTE.getKey(), 1000).put("script.stored", "true").put("script.inline", "true").put(IndicesQueryCache.INDICES_QUERIES_CACHE_ALL_SEGMENTS_SETTING.getKey(), nodeOrdinal % 2 == 0).put(IndicesStore.INDICES_STORE_DELETE_SHARD_TIMEOUT.getKey(), new TimeValue(1, TimeUnit.SECONDS));
+        return builder.build();
+    }
+
+    protected Collection<Class<? extends Plugin>> nodePlugins() {
+        return Collections.emptyList();
+    }
+
+    protected Collection<Class<? extends Plugin>> transportClientPlugins() {
+        return Collections.emptyList();
+    }
+
+    protected Settings transportClientSettings() {
+        return Settings.EMPTY;
+    }
+
+    private ExternalTestCluster buildExternalCluster(String clusterAddresses) throws IOException {
+        String[] stringAddresses = clusterAddresses.split(",");
+        TransportAddress[] transportAddresses = new TransportAddress[stringAddresses.length];
+        int i = 0;
+        for (String stringAddress : stringAddresses) {
+            URL url = new URL("http://" + stringAddress);
+            InetAddress inetAddress = InetAddress.getByName(url.getHost());
+            transportAddresses[i++] = new InetSocketTransportAddress(new InetSocketAddress(inetAddress, url.getPort()));
+        }
+        return new ExternalTestCluster(createTempDir(), externalClusterClientSettings(), transportClientPlugins(), transportAddresses);
+    }
+
+    protected Settings externalClusterClientSettings() {
+        return Settings.EMPTY;
+    }
+
+    protected boolean ignoreExternalCluster() {
+        return false;
+    }
+
+    protected TestCluster buildTestCluster(Scope scope, long seed) throws IOException {
+        String clusterAddresses = System.getProperty(TESTS_CLUSTER);
+        if (Strings.hasLength(clusterAddresses) && ignoreExternalCluster() == false) {
+            if (scope == Scope.TEST) {
+                throw new IllegalArgumentException("Cannot run TEST scope test with " + TESTS_CLUSTER);
+            }
+            return buildExternalCluster(clusterAddresses);
+        }
+        final String nodePrefix;
+        switch(scope) {
+            case TEST:
+                nodePrefix = TEST_CLUSTER_NODE_PREFIX;
+                break;
+            case SUITE:
+                nodePrefix = SUITE_CLUSTER_NODE_PREFIX;
+                break;
+            default:
+                throw new ElasticsearchException("Scope not supported: " + scope);
+        }
+        boolean supportsDedicatedMasters = getSupportsDedicatedMasters();
+        int numDataNodes = getNumDataNodes();
+        int minNumDataNodes;
+        int maxNumDataNodes;
+        if (numDataNodes >= 0) {
+            minNumDataNodes = maxNumDataNodes = numDataNodes;
+        } else {
+            minNumDataNodes = getMinNumDataNodes();
+            maxNumDataNodes = getMaxNumDataNodes();
+        }
+        Collection<Class<? extends Plugin>> mockPlugins = getMockPlugins();
+        final NodeConfigurationSource nodeConfigurationSource = getNodeConfigSource();
+        if (addMockTransportService()) {
+            ArrayList<Class<? extends Plugin>> mocks = new ArrayList<>(mockPlugins);
+            if (mockPlugins.contains(AssertingLocalTransport.TestPlugin.class) == false) {
+                mocks.add(AssertingLocalTransport.TestPlugin.class);
+            }
+            if (mockPlugins.contains(MockTcpTransportPlugin.class) == false) {
+                mocks.add(MockTcpTransportPlugin.class);
+            }
+            mockPlugins = mocks;
+        }
+        return new InternalTestCluster(seed, createTempDir(), supportsDedicatedMasters, minNumDataNodes, maxNumDataNodes, InternalTestCluster.clusterName(scope.name(), seed) + "-cluster", nodeConfigurationSource, getNumClientNodes(), InternalTestCluster.DEFAULT_ENABLE_HTTP_PIPELINING, nodePrefix, mockPlugins, getClientWrapper());
+    }
+
+    protected NodeConfigurationSource getNodeConfigSource() {
+        SuppressLocalMode noLocal = getAnnotation(this.getClass(), SuppressLocalMode.class);
+        SuppressNetworkMode noNetwork = getAnnotation(this.getClass(), SuppressNetworkMode.class);
+        Settings.Builder networkSettings = Settings.builder();
+        final boolean isNetwork;
+        if (noLocal != null && noNetwork != null) {
+            throw new IllegalStateException("Can't suppress both network and local mode");
+        } else if (noLocal != null) {
+            if (addMockTransportService()) {
+                networkSettings.put(NetworkModule.TRANSPORT_TYPE_KEY, MockTcpTransportPlugin.MOCK_TCP_TRANSPORT_NAME);
+            }
+            isNetwork = true;
+        } else {
+            if (addMockTransportService()) {
+                networkSettings.put(NetworkModule.TRANSPORT_TYPE_KEY, AssertingLocalTransport.ASSERTING_TRANSPORT_NAME);
+            } else {
+                networkSettings.put(NetworkModule.TRANSPORT_TYPE_KEY, "local");
+            }
+            isNetwork = false;
+        }
+        NodeConfigurationSource nodeConfigurationSource = new NodeConfigurationSource() {
+
+            @Override
+            public Settings nodeSettings(int nodeOrdinal) {
+                return Settings.builder().put(NetworkModule.HTTP_ENABLED.getKey(), false).put(DiscoveryModule.DISCOVERY_TYPE_SETTING.getKey(), isNetwork ? DiscoveryModule.DISCOVERY_TYPE_SETTING.getDefault(Settings.EMPTY) : "local").put(networkSettings.build()).put(ESIntegTestCase.this.nodeSettings(nodeOrdinal)).build();
+            }
+
+            @Override
+            public Collection<Class<? extends Plugin>> nodePlugins() {
+                return ESIntegTestCase.this.nodePlugins();
+            }
+
+            @Override
+            public Settings transportClientSettings() {
+                return Settings.builder().put(networkSettings.build()).put(ESIntegTestCase.this.transportClientSettings()).build();
+            }
+
+            @Override
+            public Collection<Class<? extends Plugin>> transportClientPlugins() {
+                Collection<Class<? extends Plugin>> plugins = ESIntegTestCase.this.transportClientPlugins();
+                if (isNetwork && plugins.contains(MockTcpTransportPlugin.class) == false) {
+                    plugins = new ArrayList<>(plugins);
+                    plugins.add(MockTcpTransportPlugin.class);
+                } else if (isNetwork == false && plugins.contains(AssertingLocalTransport.class) == false) {
+                    plugins = new ArrayList<>(plugins);
+                    plugins.add(AssertingLocalTransport.TestPlugin.class);
+                }
+                return Collections.unmodifiableCollection(plugins);
+            }
+        };
+        return nodeConfigurationSource;
+    }
+
+    protected boolean addMockTransportService() {
+        return true;
+    }
+
+    protected Function<Client, Client> getClientWrapper() {
+        return Function.identity();
+    }
+
+    protected Collection<Class<? extends Plugin>> getMockPlugins() {
+        final ArrayList<Class<? extends Plugin>> mocks = new ArrayList<>();
+        if (randomBoolean()) {
+            if (randomBoolean() && addMockTransportService()) {
+                mocks.add(MockTransportService.TestPlugin.class);
+            }
+            if (randomBoolean()) {
+                mocks.add(MockFSIndexStore.TestPlugin.class);
+            }
+            if (randomBoolean()) {
+                mocks.add(NodeMocksPlugin.class);
+            }
+            if (randomBoolean()) {
+                mocks.add(MockEngineFactoryPlugin.class);
+            }
+            if (randomBoolean()) {
+                mocks.add(MockSearchService.TestPlugin.class);
+            }
+        }
+        if (addMockTransportService()) {
+            mocks.add(AssertingLocalTransport.TestPlugin.class);
+            mocks.add(MockTcpTransportPlugin.class);
+        }
+        mocks.add(TestSeedPlugin.class);
+        return Collections.unmodifiableList(mocks);
+    }
+
+    public static final class TestSeedPlugin extends Plugin {
+
+        @Override
+        public List<Setting<?>> getSettings() {
+            return Arrays.asList(INDEX_TEST_SEED_SETTING);
+        }
+    }
+
+    private static double transportClientRatio() {
+        String property = System.getProperty(TESTS_CLIENT_RATIO);
+        if (property == null || property.isEmpty()) {
+            return Double.NaN;
+        }
+        return Double.parseDouble(property);
+    }
+
+    protected double getPerTestTransportClientRatio() {
+        final ClusterScope annotation = getAnnotation(this.getClass(), ClusterScope.class);
+        double perTestRatio = -1;
+        if (annotation != null) {
+            perTestRatio = annotation.transportClientRatio();
+        }
+        if (perTestRatio == -1) {
+            return Double.isNaN(TRANSPORT_CLIENT_RATIO) ? randomDouble() : TRANSPORT_CLIENT_RATIO;
+        }
+        assert perTestRatio >= 0.0 && perTestRatio <= 1.0;
+        return perTestRatio;
+    }
+
+    public Path randomRepoPath() {
+        if (currentCluster instanceof InternalTestCluster) {
+            return randomRepoPath(((InternalTestCluster) currentCluster).getDefaultSettings());
+        } else if (currentCluster instanceof CompositeTestCluster) {
+            return randomRepoPath(((CompositeTestCluster) currentCluster).internalCluster().getDefaultSettings());
+        }
+        throw new UnsupportedOperationException("unsupported cluster type");
+    }
+
+    public static Path randomRepoPath(Settings settings) {
+        Environment environment = new Environment(settings);
+        Path[] repoFiles = environment.repoFiles();
+        assert repoFiles.length > 0;
+        Path path;
+        do {
+            path = repoFiles[0].resolve(randomAsciiOfLength(10));
+        } while (Files.exists(path));
+        return path;
+    }
+
+    protected NumShards getNumShards(String index) {
+        MetaData metaData = client().admin().cluster().prepareState().get().getState().metaData();
+        assertThat(metaData.hasIndex(index), equalTo(true));
+        int numShards = Integer.valueOf(metaData.index(index).getSettings().get(SETTING_NUMBER_OF_SHARDS));
+        int numReplicas = Integer.valueOf(metaData.index(index).getSettings().get(SETTING_NUMBER_OF_REPLICAS));
+        return new NumShards(numShards, numReplicas);
+    }
+
+    public Set<String> assertAllShardsOnNodes(String index, String... pattern) {
+        Set<String> nodes = new HashSet<>();
+        ClusterState clusterState = client().admin().cluster().prepareState().execute().actionGet().getState();
+        for (IndexRoutingTable indexRoutingTable : clusterState.routingTable()) {
+            for (IndexShardRoutingTable indexShardRoutingTable : indexRoutingTable) {
+                for (ShardRouting shardRouting : indexShardRoutingTable) {
+                    if (shardRouting.currentNodeId() != null && index.equals(shardRouting.getIndexName())) {
+                        String name = clusterState.nodes().get(shardRouting.currentNodeId()).getName();
+                        nodes.add(name);
+                        assertThat("Allocated on new node: " + name, Regex.simpleMatch(pattern, name), is(true));
+                    }
+                }
+            }
+        }
+        return nodes;
+    }
+
+    protected static class NumShards {
+
+        public final int numPrimaries;
+
+        public final int numReplicas;
+
+        public final int totalNumShards;
+
+        public final int dataCopies;
+
+        private NumShards(int numPrimaries, int numReplicas) {
+            this.numPrimaries = numPrimaries;
+            this.numReplicas = numReplicas;
+            this.dataCopies = numReplicas + 1;
+            this.totalNumShards = numPrimaries * dataCopies;
+        }
+    }
+
+    private static boolean runTestScopeLifecycle() {
+        return INSTANCE == null;
+    }
+
+    @Before
+    public final void before() throws Exception {
+        if (runTestScopeLifecycle()) {
+            printTestMessage("setup");
+            beforeInternal();
+        }
+        printTestMessage("starting");
+    }
+
+    @After
+    public final void after() throws Exception {
+        printTestMessage("finished");
+        super.ensureAllSearchContextsReleased();
+        if (runTestScopeLifecycle()) {
+            printTestMessage("cleaning up after");
+            afterInternal(false);
+            printTestMessage("cleaned up after");
+        }
+    }
+
+    @AfterClass
+    public static void afterClass() throws Exception {
+        if (!runTestScopeLifecycle()) {
+            try {
+                INSTANCE.printTestMessage("cleaning up after");
+                INSTANCE.afterInternal(true);
+            } finally {
+                INSTANCE = null;
+            }
+        } else {
+            clearClusters();
+        }
+        SUITE_SEED = null;
+        currentCluster = null;
+    }
+
+    private static void initializeSuiteScope() throws Exception {
+        Class<?> targetClass = getTestClass();
+        assert INSTANCE == null;
+        if (isSuiteScopedTest(targetClass)) {
+            INSTANCE = (ESIntegTestCase) targetClass.getConstructor().newInstance();
+            boolean success = false;
+            try {
+                INSTANCE.printTestMessage("setup");
+                INSTANCE.beforeInternal();
+                INSTANCE.setupSuiteScopeCluster();
+                success = true;
+            } finally {
+                if (!success) {
+                    afterClass();
+                }
+            }
+        } else {
+            INSTANCE = null;
+        }
+    }
+
+    protected String routingKeyForShard(String index, int shard) {
+        return internalCluster().routingKeyForShard(resolveIndex(index), shard, random());
+    }
+
+    protected Settings prepareBackwardsDataDir(Path backwardsIndex, Object... settings) throws IOException {
+        Path indexDir = createTempDir();
+        Path dataDir = indexDir.resolve("data");
+        try (InputStream stream = Files.newInputStream(backwardsIndex)) {
+            TestUtil.unzip(stream, indexDir);
+        }
+        assertTrue(Files.exists(dataDir));
+        final Path[] list;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dataDir)) {
+            List<Path> dirs = new ArrayList<>();
+            for (Path p : stream) {
+                if (!p.getFileName().toString().startsWith("extra")) {
+                    dirs.add(p);
+                }
+            }
+            list = dirs.toArray(new Path[0]);
+        }
+        if (list.length != 1) {
+            StringBuilder builder = new StringBuilder("Backwards index must contain exactly one cluster\n");
+            for (Path line : list) {
+                builder.append(line.toString()).append('\n');
+            }
+            throw new IllegalStateException(builder.toString());
+        }
+        Path src = list[0].resolve(NodeEnvironment.NODES_FOLDER);
+        Path dest = dataDir.resolve(NodeEnvironment.NODES_FOLDER);
+        assertTrue(Files.exists(src));
+        Files.move(src, dest);
+        assertFalse(Files.exists(src));
+        assertTrue(Files.exists(dest));
+        Settings.Builder builder = Settings.builder().put(settings).put(Environment.PATH_DATA_SETTING.getKey(), dataDir.toAbsolutePath());
+        Path configDir = indexDir.resolve("config");
+        if (Files.exists(configDir)) {
+            builder.put(Environment.PATH_CONF_SETTING.getKey(), configDir.toAbsolutePath());
+        }
+        return builder.build();
+    }
+
+    protected static synchronized RestClient getRestClient() {
+        if (restClient == null) {
+            restClient = createRestClient(null);
+        }
+        return restClient;
+    }
+
+    protected static RestClient createRestClient(RestClientBuilder.HttpClientConfigCallback httpClientConfigCallback) {
+        return createRestClient(httpClientConfigCallback, "http");
+    }
+
+    protected static RestClient createRestClient(RestClientBuilder.HttpClientConfigCallback httpClientConfigCallback, String protocol) {
+        final NodesInfoResponse nodeInfos = client().admin().cluster().prepareNodesInfo().get();
+        final List<NodeInfo> nodes = nodeInfos.getNodes();
+        assertFalse(nodeInfos.hasFailures());
+        List<HttpHost> hosts = new ArrayList<>();
+        for (NodeInfo node : nodes) {
+            if (node.getHttp() != null) {
+                TransportAddress publishAddress = node.getHttp().address().publishAddress();
+                assertEquals(1, publishAddress.uniqueAddressTypeId());
+                InetSocketAddress address = ((InetSocketTransportAddress) publishAddress).address();
+                hosts.add(new HttpHost(NetworkAddress.format(address.getAddress()), address.getPort(), protocol));
+            }
+        }
+        RestClientBuilder builder = RestClient.builder(hosts.toArray(new HttpHost[hosts.size()]));
+        if (httpClientConfigCallback != null) {
+            builder.setHttpClientConfigCallback(httpClientConfigCallback);
+        }
+        return builder.build();
+    }
+
+    protected void setupSuiteScopeCluster() throws Exception {
+    }
+
+    private static boolean isSuiteScopedTest(Class<?> clazz) {
+        return clazz.getAnnotation(SuiteScopeTestCase.class) != null;
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    @Inherited
+    @Target(ElementType.TYPE)
+    public @interface SuiteScopeTestCase {
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    @Inherited
+    @Target(ElementType.TYPE)
+    public @interface SuppressLocalMode {
+    }
+
+    @Retention(RetentionPolicy.RUNTIME)
+    @Inherited
+    @Target(ElementType.TYPE)
+    public @interface SuppressNetworkMode {
+    }
+
+    public static Index resolveIndex(String index) {
+        GetIndexResponse getIndexResponse = client().admin().indices().prepareGetIndex().setIndices(index).get();
+        assertTrue("index " + index + " not found", getIndexResponse.getSettings().containsKey(index));
+        String uuid = getIndexResponse.getSettings().get(index).get(IndexMetaData.SETTING_INDEX_UUID);
+        return new Index(index, uuid);
+    }
+}
