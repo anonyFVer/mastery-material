@@ -22,7 +22,7 @@ java -jar mastery.jar merge <left> <base> <right> -o <output> -a <matching algor
 The explanation of arguments:
 - `<left>`, `<base>` and `<right>` are the paths of the three files to merge;
 - `<output>` is the path for the result merged code, which could not exist before execution;
-- `<matching algorithm>` is the matching algorithm one of `gumtree` (default) ``;
+- `<matching algorithm>` is the matching algorithm one of `gumtree` (default), `lcs`, `lookahead` or `changedistiller`;
 - `<formatter>` is the path for the code formatter.
 
 The simplest usage of Mastery is:
